@@ -21,14 +21,9 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 		levelStr = strings.ToUpper(levelStr)
 	}
 	level := fmt.Sprintf("[%s] ", levelStr)
-	appName := ""
-	if logToStdout {
-		appName = "[notification-server] "
-	}
+	appName := "[notification-server] "
 	buf := make([]byte, 0, len(appName)+len(timestampFormat)+len(level)+len(entry.Message)+1)
-	if logToStdout {
-		buf = append(buf, appName...)
-	}
+	buf = append(buf, appName...)
 	buf = entry.Time.AppendFormat(buf, timestampFormat)
 	buf = append(buf, level...)
 	buf = append(buf, entry.Message...)

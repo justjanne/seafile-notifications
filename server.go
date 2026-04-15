@@ -8,11 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -23,24 +20,14 @@ import (
 )
 
 var configDir string
-var logFile, absLogFile string
 var privateKey string
 var host string
 var port uint32
-var logFp *os.File
 
 var ccnetDB *sql.DB
 
-var logToStdout bool
-
 func init() {
 	flag.StringVar(&configDir, "c", "", "config directory")
-	flag.StringVar(&logFile, "l", "", "log file path")
-
-	env := os.Getenv("SEAFILE_LOG_TO_STDOUT")
-	if env == "true" {
-		logToStdout = true
-	}
 
 	log.SetFormatter(&LogFormatter{})
 }
@@ -168,33 +155,6 @@ func main() {
 		log.Fatalf("config directory %s doesn't exist: %v.", configDir, err)
 	}
 
-	if logToStdout {
-		// Use default output (StdOut)
-	} else if logFile == "" {
-		absLogFile = filepath.Join(configDir, "notification-server.log")
-		fp, err := os.OpenFile(absLogFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-		if err != nil {
-			log.Fatalf("Failed to open or create log file: %v", err)
-		}
-		logFp = fp
-		log.SetOutput(fp)
-	} else if logFile != "-" {
-		absLogFile, err = filepath.Abs(logFile)
-		if err != nil {
-			log.Fatalf("Failed to convert log file path to absolute path: %v", err)
-		}
-		fp, err := os.OpenFile(absLogFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-		if err != nil {
-			log.Fatalf("Failed to open or create log file: %v", err)
-		}
-		logFp = fp
-		log.SetOutput(fp)
-	}
-
-	if absLogFile != "" && !logToStdout {
-		Dup(int(logFp.Fd()), int(os.Stderr.Fd()))
-	}
-
 	if err := loadJwtPrivateKey(); err != nil {
 		log.Fatalf("Failed to read config: %v", err)
 	}
@@ -203,8 +163,6 @@ func main() {
 	loadCcnetDB()
 
 	Init()
-
-	go handleUser1Signal()
 
 	router := newHTTPRouter()
 
@@ -227,33 +185,6 @@ func loadJwtPrivateKey() error {
 	}
 
 	return nil
-}
-
-func handleUser1Signal() {
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGUSR1)
-
-	for {
-		<-signalChan
-		logRotate()
-	}
-}
-
-func logRotate() {
-	if logToStdout {
-		return
-	}
-	fp, err := os.OpenFile(absLogFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-	if err != nil {
-		log.Fatalf("Failed to reopen notification log: %v", err)
-	}
-	log.SetOutput(fp)
-	if logFp != nil {
-		logFp.Close()
-		logFp = fp
-	}
-
-	Dup(int(logFp.Fd()), int(os.Stderr.Fd()))
 }
 
 func newHTTPRouter() *mux.Router {
