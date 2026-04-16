@@ -14,6 +14,8 @@ func InitDatabase(config config.DatabaseConfig) (Database, error) {
 	switch config.Type {
 	case "mysql":
 		return InitMysqlDatabase(config)
+	case "pgsql":
+		return InitPgsqlDatabase(config)
 	default:
 		return nil, fmt.Errorf("failed to open database: unknown type %s", config.Type)
 	}
