@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -8,25 +9,23 @@ import (
 )
 
 const (
-	timestampFormat = "[2006-01-02 15:04:05] "
+	timestampFormat = "2006-01-02 15:04:05"
 )
 
 type LogFormatter struct{}
 
 func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
-	levelStr := entry.Level.String()
-	if levelStr == "fatal" {
-		levelStr = "ERROR"
+	var b *bytes.Buffer
+	if entry.Buffer != nil {
+		b = entry.Buffer
 	} else {
-		levelStr = strings.ToUpper(levelStr)
+		b = &bytes.Buffer{}
 	}
-	level := fmt.Sprintf("[%s] ", levelStr)
-	appName := "[notification-server] "
-	buf := make([]byte, 0, len(appName)+len(timestampFormat)+len(level)+len(entry.Message)+1)
-	buf = append(buf, appName...)
-	buf = entry.Time.AppendFormat(buf, timestampFormat)
-	buf = append(buf, level...)
-	buf = append(buf, entry.Message...)
-	buf = append(buf, '\n')
-	return buf, nil
+
+	_, err := fmt.Fprintf(b, "[notification-server] [%s] [%s] %s\n",
+		entry.Time.Format(timestampFormat),
+		strings.ToUpper(entry.Level.String()),
+		entry.Message,
+	)
+	return b.Bytes(), err
 }
