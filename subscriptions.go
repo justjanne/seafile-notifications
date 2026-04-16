@@ -13,18 +13,20 @@ const (
 	chanBufSize = 10
 )
 
-// clients is a map from client id to Client structs.
-// It contains all current connected clients. Each client is identified by 64-bit ID.
-var clients map[uint64]*Client
-var clientsMutex sync.RWMutex
+type SubscriptionState struct {
+	// clients is a map from client id to Client structs.
+	// It contains all current connected clients. Each client is identified by 64-bit ID.
+	Clients      map[uint64]*Client
+	ClientsMutex sync.RWMutex
 
-// Use atomic operation to increase this value.
-var nextClientID uint64 = 1
+	// Use atomic operation to increase this value.
+	NextClientID uint64
 
-// subscriptions is a map from repo_id to Subscribers struct.
-// It's protected by rw mutex.
-var subscriptions map[string]*Subscribers
-var subMutex sync.RWMutex
+	// subscriptions is a map from repo_id to Subscribers struct.
+	// It's protected by rw mutex.
+	Subscriptions map[string]*Subscribers
+	SubMutex      sync.RWMutex
+}
 
 // Client contains information about a client.
 // Two go routines are associated with each client to handle message reading and writting.
@@ -45,8 +47,8 @@ type Client struct {
 	Repos      map[string]int64
 	ReposMutex sync.Mutex
 	// Alive is the last time received pong.
-	Alive      time.Time
-	ConnCloser *z.Closer
+	Alive     time.Time
+	Semaphore *z.Closer
 	// Addr is the address of client.
 	Addr string
 	// User is the user of client.
@@ -61,43 +63,77 @@ type Subscribers struct {
 }
 
 // Init inits clients and subscriptions.
-func Init() {
-	clients = make(map[uint64]*Client)
-	subscriptions = make(map[string]*Subscribers)
+func (state *SubscriptionState) Init() {
+	state.Clients = make(map[uint64]*Client)
+	state.Subscriptions = make(map[string]*Subscribers)
+	state.NextClientID = 1
 }
 
 // NewClient creates a new client.
-func NewClient(conn *websocket.Conn, addr string) *Client {
+func (state *SubscriptionState) NewClient(conn *websocket.Conn, addr string) *Client {
 	client := new(Client)
-	client.ID = atomic.AddUint64(&nextClientID, 1)
+	client.ID = atomic.AddUint64(&state.NextClientID, 1)
 	client.conn = conn
 	client.WCh = make(chan interface{}, chanBufSize)
 	client.Repos = make(map[string]int64)
 	client.Alive = time.Now()
 	client.Addr = addr
-	client.ConnCloser = z.NewCloser(0)
+	client.Semaphore = z.NewCloser(0)
 
 	return client
 }
 
 // Register adds the client to the list of clients.
-func RegisterClient(client *Client) {
-	clientsMutex.Lock()
-	clients[client.ID] = client
-	clientsMutex.Unlock()
+func (state *SubscriptionState) RegisterClient(client *Client) {
+	state.ClientsMutex.Lock()
+	state.Clients[client.ID] = client
+	state.ClientsMutex.Unlock()
 }
 
 // Unregister deletes the client from the list of clients.
-func UnregisterClient(client *Client) {
-	clientsMutex.Lock()
-	delete(clients, client.ID)
-	clientsMutex.Unlock()
+func (state *SubscriptionState) UnregisterClient(client *Client) {
+	state.ClientsMutex.Lock()
+	delete(state.Clients, client.ID)
+	state.ClientsMutex.Unlock()
 }
 
-func newSubscribers(client *Client) *Subscribers {
-	subscribers := new(Subscribers)
-	subscribers.Clients = make(map[uint64]*Client)
-	subscribers.Clients[client.ID] = client
+// subscribe subscribes to notifications of repos.
+func (state *AppContext) SubscribeClient(client *Client, repoID, user string, exp int64) {
+	client.User = user
 
-	return subscribers
+	client.ReposMutex.Lock()
+	client.Repos[repoID] = exp
+	client.ReposMutex.Unlock()
+
+	state.Subscriptions.SubMutex.Lock()
+	subscribers, ok := state.Subscriptions.Subscriptions[repoID]
+	if !ok {
+		subscribers := new(Subscribers)
+		subscribers.Clients = make(map[uint64]*Client)
+		subscribers.Clients[client.ID] = client
+		state.Subscriptions.Subscriptions[repoID] = subscribers
+	}
+	state.Subscriptions.SubMutex.Unlock()
+
+	subscribers.Mutex.Lock()
+	subscribers.Clients[client.ID] = client
+	subscribers.Mutex.Unlock()
+}
+
+func (state *AppContext) UnsubscribeClient(client *Client, repoID string) {
+	client.ReposMutex.Lock()
+	delete(client.Repos, repoID)
+	client.ReposMutex.Unlock()
+
+	state.Subscriptions.SubMutex.Lock()
+	subscribers, ok := state.Subscriptions.Subscriptions[repoID]
+	if !ok {
+		state.Subscriptions.SubMutex.Unlock()
+		return
+	}
+	state.Subscriptions.SubMutex.Unlock()
+
+	subscribers.Mutex.Lock()
+	delete(subscribers.Clients, client.ID)
+	subscribers.Mutex.Unlock()
 }

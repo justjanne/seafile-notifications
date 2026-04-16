@@ -65,80 +65,66 @@ func RecoverWrapper(f func()) {
 }
 
 // HandleMessages connects to the client to process message.
-func (client *Client) HandleMessages() {
+func (state *AppContext) HandleMessages(client *Client) {
 	// Set keep alive.
 	client.conn.SetPongHandler(func(string) error {
 		client.Alive = time.Now()
 		return nil
 	})
 
-	client.ConnCloser.AddRunning(4)
-	go RecoverWrapper(client.readMessages)
-	go RecoverWrapper(client.writeMessages)
-	go RecoverWrapper(client.checkTokenExpired)
-	go RecoverWrapper(client.keepAlive)
-	client.ConnCloser.Wait()
+	client.Semaphore.AddRunning(4)
+	go RecoverWrapper(func() {
+		state.ClientReadCoroutine(client)
+	})
+	go RecoverWrapper(func() {
+		client.ClientWriteCoroutine()
+	})
+	go RecoverWrapper(func() {
+		state.ClientTokenExpirationCoroutine(client)
+	})
+	go RecoverWrapper(func() {
+		client.ClientKeepaliveCoroutine()
+	})
+	client.Semaphore.Wait()
+
 	client.Close()
-	UnregisterClient(client)
+	state.Subscriptions.UnregisterClient(client)
 	for id := range client.Repos {
-		client.unsubscribe(id)
+		state.UnsubscribeClient(client, id)
 	}
 }
 
-func (client *Client) readMessages() {
+func (state *AppContext) ClientReadCoroutine(client *Client) {
 	conn := client.conn
 	defer func() {
-		client.ConnCloser.Done()
+		client.Semaphore.Done()
 	}()
 
 	for {
 		select {
-		case <-client.ConnCloser.HasBeenClosed():
+		case <-client.Semaphore.HasBeenClosed():
 			return
 		default:
 		}
 		var msg Message
 		err := conn.ReadJSON(&msg)
 		if err != nil {
-			client.ConnCloser.Signal()
+			client.Semaphore.Signal()
 			log.Debugf("failed to read json data from client: %s: %v", client.Addr, err)
 			return
 		}
 
-		err = client.handleMessage(&msg)
+		err = state.handleMessage(client, &msg)
+
 		if err != nil {
-			client.ConnCloser.Signal()
+			client.Semaphore.Signal()
 			log.Debugf("%v", err)
 			return
 		}
 	}
 }
 
-func checkToken(tokenString, repoID string) (string, int64, bool) {
-	if len(tokenString) == 0 {
-		return "", -1, false
-	}
-	claims := new(myClaims)
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		return []byte(privateKey), nil
-	})
-	if err != nil {
-		return "", -1, false
-	}
-
-	if !token.Valid {
-		return "", -1, false
-	}
-
-	now := time.Now()
-	if claims.RepoID != repoID || claims.Exp <= now.Unix() {
-		return "", -1, false
-	}
-
-	return claims.UserName, claims.Exp, true
-}
-
-func (client *Client) handleMessage(msg *Message) error {
+func (state *AppContext) handleMessage(client *Client, msg *Message) error {
 	content := msg.Content
 
 	if msg.Type == "subscribe" {
@@ -148,12 +134,12 @@ func (client *Client) handleMessage(msg *Message) error {
 			return err
 		}
 		for _, repo := range list.Repos {
-			user, exp, valid := checkToken(repo.Token, repo.RepoID)
+			user, exp, valid := state.checkToken(repo.Token, repo.RepoID)
 			if !valid {
 				client.notifJWTExpired(repo.RepoID)
 				continue
 			}
-			client.subscribe(repo.RepoID, user, exp)
+			state.SubscribeClient(client, repo.RepoID, user, exp)
 		}
 	} else if msg.Type == "unsubscribe" {
 		var list UnsubList
@@ -162,7 +148,7 @@ func (client *Client) handleMessage(msg *Message) error {
 			return err
 		}
 		for _, r := range list.Repos {
-			client.unsubscribe(r.RepoID)
+			state.UnsubscribeClient(client, r.RepoID)
 		}
 	} else {
 		err := fmt.Errorf("recv unexpected type of message: %s", msg.Type)
@@ -172,49 +158,9 @@ func (client *Client) handleMessage(msg *Message) error {
 	return nil
 }
 
-// subscribe subscribes to notifications of repos.
-func (client *Client) subscribe(repoID, user string, exp int64) {
-	client.User = user
-
-	client.ReposMutex.Lock()
-	client.Repos[repoID] = exp
-	client.ReposMutex.Unlock()
-
-	subMutex.Lock()
-	subscribers, ok := subscriptions[repoID]
-	if !ok {
-		subscribers = newSubscribers(client)
-		subscriptions[repoID] = subscribers
-	}
-	subMutex.Unlock()
-
-	subscribers.Mutex.Lock()
-	subscribers.Clients[client.ID] = client
-	subscribers.Mutex.Unlock()
-}
-
-func (client *Client) unsubscribe(repoID string) {
-	client.ReposMutex.Lock()
-	delete(client.Repos, repoID)
-	client.ReposMutex.Unlock()
-
-	subMutex.Lock()
-	subscribers, ok := subscriptions[repoID]
-	if !ok {
-		subMutex.Unlock()
-		return
-	}
-	subMutex.Unlock()
-
-	subscribers.Mutex.Lock()
-	delete(subscribers.Clients, client.ID)
-	subscribers.Mutex.Unlock()
-
-}
-
-func (client *Client) writeMessages() {
+func (client *Client) ClientWriteCoroutine() {
 	defer func() {
-		client.ConnCloser.Done()
+		client.Semaphore.Done()
 	}()
 
 	for {
@@ -225,21 +171,21 @@ func (client *Client) writeMessages() {
 			err := client.conn.WriteJSON(msg)
 			client.connMutex.Unlock()
 			if err != nil {
-				client.ConnCloser.Signal()
+				client.Semaphore.Signal()
 				log.Debugf("failed to send notification to client: %v", err)
 				return
 			}
 			m, _ := msg.(*Message)
 			log.Debugf("send %s event to client %s(%d): %s", m.Type, client.User, client.ID, string(m.Content))
-		case <-client.ConnCloser.HasBeenClosed():
+		case <-client.Semaphore.HasBeenClosed():
 			return
 		}
 	}
 }
 
-func (client *Client) keepAlive() {
+func (client *Client) ClientKeepaliveCoroutine() {
 	defer func() {
-		client.ConnCloser.Done()
+		client.Semaphore.Done()
 	}()
 
 	ticker := time.NewTicker(pingPeriod)
@@ -247,7 +193,7 @@ func (client *Client) keepAlive() {
 		select {
 		case <-ticker.C:
 			if time.Since(client.Alive) > pongWait {
-				client.ConnCloser.Signal()
+				client.Semaphore.Signal()
 				log.Debugf("disconnected because no pong was received for more than %v", pongWait)
 				return
 			}
@@ -256,19 +202,19 @@ func (client *Client) keepAlive() {
 			err := client.conn.WriteMessage(websocket.PingMessage, nil)
 			client.connMutex.Unlock()
 			if err != nil {
-				client.ConnCloser.Signal()
+				client.Semaphore.Signal()
 				log.Debugf("failed to send ping message to client: %v", err)
 				return
 			}
-		case <-client.ConnCloser.HasBeenClosed():
+		case <-client.Semaphore.HasBeenClosed():
 			return
 		}
 	}
 }
 
-func (client *Client) checkTokenExpired() {
+func (state *AppContext) ClientTokenExpirationCoroutine(client *Client) {
 	defer func() {
-		client.ConnCloser.Done()
+		client.Semaphore.Done()
 	}()
 
 	ticker := time.NewTicker(checkTokenPeriod)
@@ -288,10 +234,10 @@ func (client *Client) checkTokenExpired() {
 			client.ReposMutex.Unlock()
 
 			for repoID := range pendingRepos {
-				client.unsubscribe(repoID)
+				state.UnsubscribeClient(client, repoID)
 				client.notifJWTExpired(repoID)
 			}
-		case <-client.ConnCloser.HasBeenClosed():
+		case <-client.Semaphore.HasBeenClosed():
 			return
 		}
 	}

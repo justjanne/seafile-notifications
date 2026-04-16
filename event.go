@@ -39,7 +39,7 @@ type CommentEvent struct {
 	FilePath string `json:"file_path"`
 }
 
-func Notify(msg *Message) {
+func (state *AppContext) Notify(msg *Message) {
 	var repoID string
 	// userList is the list of users who need to be notified, if it is nil, all subscribed users will be notified.
 	var userList map[string]struct{}
@@ -74,7 +74,7 @@ func Notify(msg *Message) {
 			userList = make(map[string]struct{})
 			userList[event.User] = struct{}{}
 		} else if event.Group != -1 {
-			userList = getGroupMembers(event.Group)
+			userList = state.getGroupMembers(event.Group)
 		}
 	case "comment-update":
 		var event CommentEvent
@@ -90,13 +90,13 @@ func Notify(msg *Message) {
 
 	clients := make(map[uint64]*Client)
 
-	subMutex.RLock()
-	subscribers := subscriptions[repoID]
+	state.Subscriptions.SubMutex.RLock()
+	subscribers := state.Subscriptions.Subscriptions[repoID]
 	if subscribers == nil {
-		subMutex.RUnlock()
+		state.Subscriptions.SubMutex.RUnlock()
 		return
 	}
-	subMutex.RUnlock()
+	state.Subscriptions.SubMutex.RUnlock()
 
 	subscribers.Mutex.RLock()
 	for clientID, client := range subscribers.Clients {
@@ -129,11 +129,11 @@ func Notify(msg *Message) {
 	}()
 }
 
-func getGroupMembers(group int) map[string]struct{} {
+func (state *AppContext) getGroupMembers(group int) map[string]struct{} {
 	query := `SELECT user_name FROM GroupUser WHERE group_id = ?`
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	stmt, err := ccnetDB.PrepareContext(ctx, query)
+	stmt, err := state.CcnetDB.PrepareContext(ctx, query)
 	if err != nil {
 		log.Printf("failed to prepare sql: %s：%v", query, err)
 		return nil
