@@ -35,11 +35,8 @@ func main() {
 
 	log.Info("notification server started.")
 
-	server := new(http.Server)
-	server.Addr = fmt.Sprintf("%s:%d", app.Config.Host, app.Config.Port)
-	server.Handler = router
-
-	if err := server.ListenAndServe(); err != nil {
+	addr := fmt.Sprintf("%s:%d", app.Config.Host, app.Config.Port)
+	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Infof("notificationserver exiting: %v", err)
 	}
 }
