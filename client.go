@@ -145,8 +145,7 @@ func (client *Client) ClientWriteCoroutine() {
 				log.Debugf("failed to send notification to client: %v", err)
 				return
 			}
-			m, _ := msg.(*message.Message)
-			log.Debugf("send %s event to client %s(%d): %s", m.Type, client.User, client.ID, string(m.Content))
+			log.Debugf("send %s event to client %s(%d): %s", msg.Type, client.User, client.ID, string(msg.Content))
 		case <-client.Semaphore.HasBeenClosed():
 			return
 		}
@@ -214,7 +213,7 @@ func (state *AppContext) ClientTokenExpirationCoroutine(client *Client) {
 }
 
 func (client *Client) notifJWTExpired(repoID string) {
-	client.WCh <- message.Message{
+	client.WCh <- &message.Message{
 		Type:    "jwt-expired",
 		Content: json.RawMessage(fmt.Sprintf("{\"repo_id\":\"%s\"}", repoID)),
 	}

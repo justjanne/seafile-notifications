@@ -7,6 +7,7 @@ import (
 
 	"github.com/dgraph-io/ristretto/z"
 	"github.com/gorilla/websocket"
+	"github.com/justjanne/seafile-notifications/message"
 )
 
 const (
@@ -41,7 +42,7 @@ type Client struct {
 
 	// WCh is used to write messages to a client.
 	// The structs written into the channel will be converted to JSON and sent to client.
-	WCh chan interface{}
+	WCh chan *message.Message
 
 	// Repos is the repos this client subscribed to.
 	Repos      map[string]int64
@@ -75,7 +76,7 @@ func (state *SubscriptionState) NewClient(conn *websocket.Conn, addr string) *Cl
 	client := new(Client)
 	client.ID = atomic.AddUint64(&state.NextClientID, 1)
 	client.conn = conn
-	client.WCh = make(chan interface{}, chanBufSize)
+	client.WCh = make(chan *message.Message, chanBufSize)
 	client.Repos = make(map[string]int64)
 	client.Alive = time.Now()
 	client.Addr = addr
@@ -109,7 +110,7 @@ func (state *SubscriptionState) SubscribeClient(client *Client, repoID, user str
 	state.SubMutex.Lock()
 	subscribers, ok := state.Subscriptions[repoID]
 	if !ok {
-		subscribers := new(Subscribers)
+		subscribers = new(Subscribers)
 		subscribers.Clients = make(map[uint64]*Client)
 		subscribers.Clients[client.ID] = client
 		state.Subscriptions[repoID] = subscribers
