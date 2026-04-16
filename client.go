@@ -6,8 +6,8 @@ import (
 	"runtime/debug"
 	"time"
 
-	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/justjanne/seafile-notifications/message"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -19,36 +19,6 @@ const (
 
 	checkTokenPeriod = 1 * time.Hour
 )
-
-// Message is the message communicated between clients and server.
-type Message struct {
-	Type    string          `json:"type"`
-	Content json.RawMessage `json:"content"`
-}
-
-type SubList struct {
-	Repos []Repo `json:"repos"`
-}
-
-type UnsubList struct {
-	Repos []Repo `json:"repos"`
-}
-
-type Repo struct {
-	RepoID string `json:"id"`
-	Token  string `json:"jwt_token"`
-}
-
-type myClaims struct {
-	Exp      int64  `json:"exp"`
-	RepoID   string `json:"repo_id"`
-	UserName string `json:"username"`
-	jwt.RegisteredClaims
-}
-
-func (*myClaims) Valid() error {
-	return nil
-}
 
 func (client *Client) Close() {
 	client.conn.Close()
@@ -90,7 +60,7 @@ func (state *AppContext) HandleMessages(client *Client) {
 	client.Close()
 	state.Subscriptions.UnregisterClient(client)
 	for id := range client.Repos {
-		state.UnsubscribeClient(client, id)
+		state.Subscriptions.UnsubscribeClient(client, id)
 	}
 }
 
@@ -106,7 +76,7 @@ func (state *AppContext) ClientReadCoroutine(client *Client) {
 			return
 		default:
 		}
-		var msg Message
+		var msg message.Message
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			client.Semaphore.Signal()
@@ -124,11 +94,11 @@ func (state *AppContext) ClientReadCoroutine(client *Client) {
 	}
 }
 
-func (state *AppContext) handleMessage(client *Client, msg *Message) error {
+func (state *AppContext) handleMessage(client *Client, msg *message.Message) error {
 	content := msg.Content
 
 	if msg.Type == "subscribe" {
-		var list SubList
+		var list message.SubscribeMessage
 		err := json.Unmarshal(content, &list)
 		if err != nil {
 			return err
@@ -139,16 +109,16 @@ func (state *AppContext) handleMessage(client *Client, msg *Message) error {
 				client.notifJWTExpired(repo.RepoID)
 				continue
 			}
-			state.SubscribeClient(client, repo.RepoID, user, exp)
+			state.Subscriptions.SubscribeClient(client, repo.RepoID, user, exp)
 		}
 	} else if msg.Type == "unsubscribe" {
-		var list UnsubList
+		var list message.UnsubscribeMessage
 		err := json.Unmarshal(content, &list)
 		if err != nil {
 			return err
 		}
 		for _, r := range list.Repos {
-			state.UnsubscribeClient(client, r.RepoID)
+			state.Subscriptions.UnsubscribeClient(client, r.RepoID)
 		}
 	} else {
 		err := fmt.Errorf("recv unexpected type of message: %s", msg.Type)
@@ -175,7 +145,7 @@ func (client *Client) ClientWriteCoroutine() {
 				log.Debugf("failed to send notification to client: %v", err)
 				return
 			}
-			m, _ := msg.(*Message)
+			m, _ := msg.(*message.Message)
 			log.Debugf("send %s event to client %s(%d): %s", m.Type, client.User, client.ID, string(m.Content))
 		case <-client.Semaphore.HasBeenClosed():
 			return
@@ -234,7 +204,7 @@ func (state *AppContext) ClientTokenExpirationCoroutine(client *Client) {
 			client.ReposMutex.Unlock()
 
 			for repoID := range pendingRepos {
-				state.UnsubscribeClient(client, repoID)
+				state.Subscriptions.UnsubscribeClient(client, repoID)
 				client.notifJWTExpired(repoID)
 			}
 		case <-client.Semaphore.HasBeenClosed():
@@ -244,9 +214,8 @@ func (state *AppContext) ClientTokenExpirationCoroutine(client *Client) {
 }
 
 func (client *Client) notifJWTExpired(repoID string) {
-	msg := new(Message)
-	msg.Type = "jwt-expired"
-	content := fmt.Sprintf("{\"repo_id\":\"%s\"}", repoID)
-	msg.Content = []byte(content)
-	client.WCh <- msg
+	client.WCh <- message.Message{
+		Type:    "jwt-expired",
+		Content: json.RawMessage(fmt.Sprintf("{\"repo_id\":\"%s\"}", repoID)),
+	}
 }

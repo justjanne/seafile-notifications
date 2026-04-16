@@ -62,11 +62,12 @@ type Subscribers struct {
 	Mutex   sync.RWMutex
 }
 
-// Init inits clients and subscriptions.
-func (state *SubscriptionState) Init() {
-	state.Clients = make(map[uint64]*Client)
-	state.Subscriptions = make(map[string]*Subscribers)
-	state.NextClientID = 1
+func InitSubscriptions() SubscriptionState {
+	return SubscriptionState{
+		Clients:       make(map[uint64]*Client),
+		Subscriptions: make(map[string]*Subscribers),
+		NextClientID:  1,
+	}
 }
 
 // NewClient creates a new client.
@@ -98,40 +99,40 @@ func (state *SubscriptionState) UnregisterClient(client *Client) {
 }
 
 // subscribe subscribes to notifications of repos.
-func (state *AppContext) SubscribeClient(client *Client, repoID, user string, exp int64) {
+func (state *SubscriptionState) SubscribeClient(client *Client, repoID, user string, exp int64) {
 	client.User = user
 
 	client.ReposMutex.Lock()
 	client.Repos[repoID] = exp
 	client.ReposMutex.Unlock()
 
-	state.Subscriptions.SubMutex.Lock()
-	subscribers, ok := state.Subscriptions.Subscriptions[repoID]
+	state.SubMutex.Lock()
+	subscribers, ok := state.Subscriptions[repoID]
 	if !ok {
 		subscribers := new(Subscribers)
 		subscribers.Clients = make(map[uint64]*Client)
 		subscribers.Clients[client.ID] = client
-		state.Subscriptions.Subscriptions[repoID] = subscribers
+		state.Subscriptions[repoID] = subscribers
 	}
-	state.Subscriptions.SubMutex.Unlock()
+	state.SubMutex.Unlock()
 
 	subscribers.Mutex.Lock()
 	subscribers.Clients[client.ID] = client
 	subscribers.Mutex.Unlock()
 }
 
-func (state *AppContext) UnsubscribeClient(client *Client, repoID string) {
+func (state *SubscriptionState) UnsubscribeClient(client *Client, repoID string) {
 	client.ReposMutex.Lock()
 	delete(client.Repos, repoID)
 	client.ReposMutex.Unlock()
 
-	state.Subscriptions.SubMutex.Lock()
-	subscribers, ok := state.Subscriptions.Subscriptions[repoID]
+	state.SubMutex.Lock()
+	subscribers, ok := state.Subscriptions[repoID]
 	if !ok {
-		state.Subscriptions.SubMutex.Unlock()
+		state.SubMutex.Unlock()
 		return
 	}
-	state.Subscriptions.SubMutex.Unlock()
+	state.SubMutex.Unlock()
 
 	subscribers.Mutex.Lock()
 	delete(subscribers.Clients, client.ID)

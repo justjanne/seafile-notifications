@@ -1,18 +1,17 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"net/http"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/justjanne/seafile-notifications/config"
+	"github.com/justjanne/seafile-notifications/db"
 	log "github.com/sirupsen/logrus"
 )
 
 type AppContext struct {
 	Config        config.AppConfig
-	CcnetDB       *sql.DB
+	Database      db.Database
 	Subscriptions SubscriptionState
 }
 
@@ -27,8 +26,10 @@ func main() {
 	}
 	log.SetLevel(app.Config.LogLevel)
 
-	app.CcnetDB = loadCcnetDB(app.Config.Database)
-	app.Subscriptions.Init()
+	if app.Database, err = db.InitDatabase(app.Config.Database); err != nil {
+		log.Fatalf("could not init database: %v", err)
+	}
+	app.Subscriptions = InitSubscriptions()
 
 	router := app.newHTTPRouter()
 

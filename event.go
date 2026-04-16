@@ -1,45 +1,15 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"runtime/debug"
-	"time"
 
+	"github.com/justjanne/seafile-notifications/message"
 	log "github.com/sirupsen/logrus"
 )
 
-type RepoUpdateEvent struct {
-	RepoID   string `json:"repo_id"`
-	CommitID string `json:"commit_id"`
-}
-
-type FileLockEvent struct {
-	RepoID      string `json:"repo_id"`
-	Path        string `json:"path"`
-	ChangeEvent string `json:"change_event"`
-	LockUser    string `json:"lock_user"`
-}
-
-type FolderPermEvent struct {
-	RepoID      string `json:"repo_id"`
-	Path        string `json:"path"`
-	Type        string `json:"type"`
-	ChangeEvent string `json:"change_event"`
-	User        string `json:"user"`
-	Group       int    `json:"group"`
-	Perm        string `json:"perm"`
-}
-
-type CommentEvent struct {
-	RepoID   string `json:"repo_id"`
-	Type     string `json:"type"`
-	FileUUID string `json:"file_uuid"`
-	FilePath string `json:"file_path"`
-}
-
-func (state *AppContext) Notify(msg *Message) {
+func (state *AppContext) Notify(msg *message.Message) {
 	var repoID string
 	// userList is the list of users who need to be notified, if it is nil, all subscribed users will be notified.
 	var userList map[string]struct{}
@@ -47,7 +17,7 @@ func (state *AppContext) Notify(msg *Message) {
 	content := msg.Content
 	switch msg.Type {
 	case "repo-update":
-		var event RepoUpdateEvent
+		var event message.RepoUpdateEvent
 		err := json.Unmarshal(content, &event)
 		if err != nil {
 			log.Warn(err)
@@ -55,7 +25,7 @@ func (state *AppContext) Notify(msg *Message) {
 		}
 		repoID = event.RepoID
 	case "file-lock-changed":
-		var event FileLockEvent
+		var event message.FileLockEvent
 		err := json.Unmarshal(content, &event)
 		if err != nil {
 			log.Warn(err)
@@ -63,7 +33,7 @@ func (state *AppContext) Notify(msg *Message) {
 		}
 		repoID = event.RepoID
 	case "folder-perm-changed":
-		var event FolderPermEvent
+		var event message.FolderPermEvent
 		err := json.Unmarshal(content, &event)
 		if err != nil {
 			log.Warn(err)
@@ -74,10 +44,13 @@ func (state *AppContext) Notify(msg *Message) {
 			userList = make(map[string]struct{})
 			userList[event.User] = struct{}{}
 		} else if event.Group != -1 {
-			userList = state.getGroupMembers(event.Group)
+			userList, err = state.Database.GetGroupMembers(event.Group)
+			if err != nil {
+				log.Warn(err)
+			}
 		}
 	case "comment-update":
-		var event CommentEvent
+		var event message.CommentEvent
 		err := json.Unmarshal(content, &event)
 		if err != nil {
 			log.Warn(err)
@@ -127,41 +100,6 @@ func (state *AppContext) Notify(msg *Message) {
 			branches = append(branches[:index], branches[index+1:]...)
 		}
 	}()
-}
-
-func (state *AppContext) getGroupMembers(group int) map[string]struct{} {
-	query := `SELECT user_name FROM GroupUser WHERE group_id = ?`
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	stmt, err := state.CcnetDB.PrepareContext(ctx, query)
-	if err != nil {
-		log.Printf("failed to prepare sql: %s：%v", query, err)
-		return nil
-	}
-	defer stmt.Close()
-
-	rows, err := stmt.QueryContext(ctx, group)
-	if err != nil {
-		log.Printf("failed to query sql: %v", err)
-		return nil
-	}
-	defer rows.Close()
-
-	userList := make(map[string]struct{})
-	var userName string
-
-	for rows.Next() {
-		if err := rows.Scan(&userName); err == nil {
-			userList[userName] = struct{}{}
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		log.Printf("failed to scan sql rows: %v", err)
-		return nil
-	}
-
-	return userList
 }
 
 func needToNotif(userList map[string]struct{}, user string) bool {

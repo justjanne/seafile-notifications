@@ -3,11 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/justjanne/seafile-notifications/message"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -46,8 +46,6 @@ func (state *AppContext) messageCB(rsp http.ResponseWriter, r *http.Request) *ap
 }
 
 func (state *AppContext) eventCB(rsp http.ResponseWriter, r *http.Request) *appError {
-	msg := Message{}
-
 	token := getAuthorizationToken(r.Header)
 	if !state.checkAuthToken(token) {
 		return &appError{Error: nil,
@@ -56,21 +54,13 @@ func (state *AppContext) eventCB(rsp http.ResponseWriter, r *http.Request) *appE
 		}
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
+	var msg message.Message
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 		return &appError{Error: err,
 			Message: "",
 			Code:    http.StatusInternalServerError,
 		}
 	}
-
-	if err := json.Unmarshal(body, &msg); err != nil {
-		return &appError{Error: err,
-			Message: "",
-			Code:    http.StatusInternalServerError,
-		}
-	}
-
 	state.Notify(&msg)
 
 	return nil

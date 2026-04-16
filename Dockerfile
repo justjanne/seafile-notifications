@@ -11,4 +11,4 @@ FROM alpine
 COPY --from=go_builder /repo/notification-server /
 USER 1000:1000
 
-ENTRYPOINT ["/notification-server", "-c", "/config", "-l", "/tmp"]
+ENTRYPOINT ["/notification-server", "-c", "/config"]
